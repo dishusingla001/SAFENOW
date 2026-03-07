@@ -1,0 +1,313 @@
+import json
+import logging
+import threading
+import os
+from django.utils import timezone
+from rest_framework import status
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.response import Response
+from rest_framework.renderers import JSONRenderer
+
+from .models import SOSRequest
+from .serializers import (
+    SOSRequestCreateSerializer,
+    SOSRequestSerializer,
+    SOSRequestUpdateSerializer,
+)
+from authentication.models import User
+
+logger = logging.getLogger('sos')
+
+
+def is_admin(user):
+    return user.role == 'admin'
+
+
+def is_service_provider(user):
+    return user.role in ('admin', 'hospital', 'fire', 'ngo', 'police')
+
+
+# Map SOS type to the service provider group(s) that should be notified
+SOS_TYPE_TO_GROUPS = {
+    'Ambulance': ['hospital_sos'],
+    'Medical Help': ['hospital_sos'],
+    'Fire Emergency': ['fire_sos'],
+    'NGO Support': ['ngo_sos'],
+    'Police': ['admin_sos'],
+}
+
+# Map service role to the SOS types they handle
+ROLE_TO_SOS_TYPES = {
+    'hospital': ['Ambulance', 'Medical Help'],
+    'fire': ['Fire Emergency'],
+    'ngo': ['NGO Support'],
+    'admin': None,  # Admin sees all types
+}
+
+
+def get_target_groups(sos_type):
+    """Get the WebSocket groups to notify for a given SOS type. Admin always included."""
+    groups = list(SOS_TYPE_TO_GROUPS.get(sos_type, []))
+    if 'admin_sos' not in groups:
+        groups.append('admin_sos')
+    return groups
+
+
+def serialize_for_ws(serializer_data):
+    """Convert DRF serializer data to plain JSON-safe dict."""
+    return json.loads(JSONRenderer().render(serializer_data))
+
+
+def notify_ws(group, msg_type, data):
+    """Send WebSocket notification in a separate thread to avoid async_to_sync issues under ASGI."""
+    def _send():
+        try:
+            import asyncio
+            from channels.layers import get_channel_layer
+            channel_layer = get_channel_layer()
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(
+                channel_layer.group_send(group, {'type': msg_type, 'request': data})
+            )
+            loop.close()
+            logger.info(f"WS notification sent: {msg_type} to {group}")
+        except Exception as e:
+            logger.warning(f"WS notification failed: {e}")
+    threading.Thread(target=_send, daemon=True).start()
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def submit_sos_request(request):
+    """Submit a new SOS emergency request."""
+    serializer = SOSRequestCreateSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    sos = SOSRequest.objects.create(
+        user=request.user,
+        type=serializer.validated_data['type'],
+        latitude=serializer.validated_data['latitude'],
+        longitude=serializer.validated_data['longitude'],
+        accuracy=serializer.validated_data.get('accuracy'),
+        address=serializer.validated_data.get('address', ''),
+    )
+
+    sos_data = SOSRequestSerializer(sos).data
+
+    # Notify only the relevant service provider groups via WebSocket
+    ws_data = serialize_for_ws(sos_data)
+    for group in get_target_groups(sos.type):
+        notify_ws(group, 'new_sos_request', ws_data)
+
+    return Response({
+        'success': True,
+        'request': sos_data,
+        'message': 'Emergency request sent successfully. Help is on the way!',
+    }, status=status.HTTP_201_CREATED)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def user_requests(request):
+    """Get the authenticated user's SOS request history."""
+    requests_qs = SOSRequest.objects.filter(user=request.user)
+    serializer = SOSRequestSerializer(requests_qs, many=True)
+
+    return Response({
+        'success': True,
+        'requests': serializer.data,
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def all_sos_requests(request):
+    """Get all SOS requests (service providers only: admin, hospital, fire, ngo)."""
+    if not is_service_provider(request.user):
+        return Response(
+            {'success': False, 'message': 'Service provider access required'},
+            status=status.HTTP_403_FORBIDDEN
+        )
+
+    requests_qs = SOSRequest.objects.select_related('user', 'responded_by').all()
+
+    # Filter by SOS types relevant to this service provider's role
+    allowed_types = ROLE_TO_SOS_TYPES.get(request.user.role)
+    if allowed_types is not None:
+        requests_qs = requests_qs.filter(type__in=allowed_types)
+
+    serializer = SOSRequestSerializer(requests_qs, many=True)
+
+    return Response({
+        'success': True,
+        'requests': serializer.data,
+    })
+
+
+@api_view(['PATCH'])
+@permission_classes([IsAuthenticated])
+def update_request_status(request, request_id):
+    """Update SOS request status (service providers only)."""
+    if not is_service_provider(request.user):
+        return Response(
+            {'success': False, 'message': 'Service provider access required'},
+            status=status.HTTP_403_FORBIDDEN
+        )
+
+    try:
+        sos = SOSRequest.objects.get(id=request_id)
+    except SOSRequest.DoesNotExist:
+        return Response(
+            {'success': False, 'message': 'Request not found'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    serializer = SOSRequestUpdateSerializer(data=request.data)
+    serializer.is_valid(raise_exception=True)
+
+    new_status = serializer.validated_data['status']
+    notes = serializer.validated_data.get('notes', '')
+
+    sos.status = new_status
+    sos.notes = notes
+    sos.responded_by = request.user
+
+    if new_status == 'accepted':
+        sos.accepted_at = timezone.now()
+        sos.response_time = sos.calculate_response_time()
+    elif new_status == 'completed':
+        sos.completed_at = timezone.now()
+
+    sos.save()
+
+    sos_data = SOSRequestSerializer(sos).data
+    ws_data = serialize_for_ws(sos_data)
+
+    # Notify only the relevant service provider groups + the user
+    for group in get_target_groups(sos.type):
+        notify_ws(group, 'sos_status_update', ws_data)
+    notify_ws(f'user_{sos.user.mobile}', 'sos_status_update', ws_data)
+
+    return Response({
+        'success': True,
+        'message': f'Request {new_status} successfully',
+        'requestId': str(sos.id),
+        'status': new_status,
+    })
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def chatbot_response(request):
+    """
+    AI Safety Chatbot endpoint.
+    Provides safety guidance and emergency advice using Google Gemini AI.
+    """
+    user_message = request.data.get('message', '').strip()
+
+    if not user_message:
+        return Response(
+            {'success': False, 'error': 'Message is required'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    try:
+        # Import Gemini AI
+        import google.generativeai as genai
+
+        # Configure API key from environment
+        api_key = os.environ.get('GEMINI_API_KEY')
+        if not api_key:
+            # Fallback response when API key is not configured
+            return Response({
+                'success': True,
+                'response': get_fallback_response(user_message),
+            })
+
+        genai.configure(api_key=api_key)
+
+        # Initialize the model
+        model = genai.GenerativeModel('gemini-1.5-flash')
+
+        # System instruction for safety assistant
+        system_instruction = """You are a helpful safety assistant for an emergency SOS application called SafeNow. 
+Your role is to provide short, practical, and clear advice for safety situations.
+
+Guidelines:
+- Keep responses brief (2-4 sentences maximum)
+- Focus on immediate, actionable steps
+- Be calm and reassuring
+- Cover topics like: minor injuries (cuts, burns, sprains), safety precautions, harassment, accidents, fires, medical emergencies
+- If the situation sounds like a MINOR issue that needs professional help (not life-threatening), suggest they can send an SOS alert
+- For life-threatening emergencies, remind them to call emergency services immediately (they shouldn't be chatting)
+- Use simple, clear language
+- Prioritize safety above all
+
+Examples of good responses:
+User: "I have a small cut on my hand"
+You: "For a small cut, wash it with clean water and soap, apply pressure with a clean cloth to stop bleeding, then cover with a bandage. If bleeding persists or the cut is deep, consider seeking medical attention."
+
+User: "Someone is following me"
+You: "Stay in well-lit public areas, keep walking toward crowded places, call a trusted contact, and if you feel threatened, use your SOS alert to get help immediately."
+
+Remember: This chatbot is for MINOR safety concerns and guidance, not life-threatening emergencies."""
+
+        # Generate response
+        prompt = f"{system_instruction}\n\nUser: {user_message}\nAssistant:"
+        response = model.generate_content(prompt)
+
+        ai_response = response.text if response.text else "I'm here to help with safety questions. Could you please provide more details about your situation?"
+
+        return Response({
+            'success': True,
+            'response': ai_response,
+        })
+
+    except ImportError:
+        logger.error("google-generativeai library not installed")
+        return Response({
+            'success': True,
+            'response': get_fallback_response(user_message),
+        })
+    except Exception as e:
+        logger.error(f"Chatbot error: {str(e)}")
+        return Response({
+            'success': True,
+            'response': get_fallback_response(user_message),
+        })
+
+
+def get_fallback_response(user_message):
+    """Provide basic safety responses when AI is unavailable."""
+    message_lower = user_message.lower()
+
+    # Basic keyword matching for common scenarios
+    if any(word in message_lower for word in ['cut', 'bleeding', 'wound']):
+        return "For minor cuts: Clean with water and soap, apply pressure with a clean cloth, and cover with a bandage. If bleeding doesn't stop or the cut is deep, seek medical help."
+
+    elif any(word in message_lower for word in ['burn', 'burnt', 'burning']):
+        return "For minor burns: Cool the burn under running water for 10-15 minutes, cover with a clean cloth, and avoid ice or butter. For severe burns, seek medical attention immediately."
+
+    elif any(word in message_lower for word in ['following', 'stalking', 'harass']):
+        return "If you feel unsafe: Stay in well-lit public areas, move toward crowded places, call a trusted contact, and use the SOS button if you're in danger."
+
+    elif any(word in message_lower for word in ['accident', 'crash', 'collision']):
+        return "After an accident: Ensure you're safe, check for injuries, call emergency services if needed, and document the scene. Use the SOS button for immediate assistance."
+
+    elif any(word in message_lower for word in ['fire', 'smoke']):
+        return "In case of fire: Get out immediately, stay low to avoid smoke, close doors behind you, and call fire services. Never go back inside a burning building."
+
+    elif any(word in message_lower for word in ['sprain', 'twisted', 'ankle', 'wrist']):
+        return "For sprains: Rest the injured area, apply ice wrapped in cloth for 15 minutes, compress with a bandage, and elevate it. If pain is severe, seek medical help."
+
+    elif any(word in message_lower for word in ['chest pain', 'heart', 'breathing']):
+        return "Chest pain or breathing difficulty can be serious. Sit down, stay calm, and call emergency services immediately. Do not ignore these symptoms."
+
+    elif any(word in message_lower for word in ['poison', 'swallowed', 'toxic']):
+        return "If someone swallowed poison: Do NOT make them vomit. Call poison control or emergency services immediately. Keep the substance container if possible."
+
+    else:
+        return "I'm here to help with safety questions. For minor injuries, stay calm and apply basic first aid. For serious emergencies, please use the SOS button or call emergency services immediately."
+
