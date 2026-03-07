@@ -1,0 +1,404 @@
+import { useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { Shield, PhoneCall, AlertCircle, Building2, Lock } from "lucide-react";
+import { sendOTP, verifyOTP, serviceLogin } from "../utils/api";
+import { useAuth } from "../contexts/AuthContext";
+import { useLanguage } from "../contexts/LanguageContext";
+import { translations } from "../utils/translations";
+
+const Login = () => {
+  const { language } = useLanguage();
+  const t = translations[language];
+  const [loginMode, setLoginMode] = useState("user"); // 'user' or 'service'
+  const [mobile, setMobile] = useState("");
+  const [otp, setOtp] = useState("");
+  const [step, setStep] = useState("mobile"); // 'mobile' or 'otp'
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [otpSent, setOtpSent] = useState(false);
+  const [demoOtp, setDemoOtp] = useState(""); // For demo purposes
+
+  // Service Provider Login fields
+  const [serviceId, setServiceId] = useState("");
+  const [password, setPassword] = useState("");
+
+  const navigate = useNavigate();
+  const { login } = useAuth();
+
+  const handleSendOTP = async (e) => {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+
+    try {
+      // Validate mobile number
+      if (!/^\d{10}$/.test(mobile)) {
+        throw new Error("Please enter a valid 10-digit mobile number");
+      }
+
+      const response = await sendOTP(mobile);
+      setDemoOtp(response.otp); // Store for demo display
+      setOtpSent(true);
+      setStep("otp");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVerifyOTP = async (e) => {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+
+    try {
+      if (otp.length !== 6) {
+        throw new Error("Please enter a valid 6-digit OTP");
+      }
+
+      const response = await verifyOTP(mobile, otp);
+
+      // Login user with token
+      login(response.user, response.token, response.refresh);
+
+      // Redirect based on role
+      if (response.user.role === "admin") {
+        navigate("/admin-dashboard");
+      } else {
+        navigate("/user-dashboard");
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResendOTP = async () => {
+    setError("");
+    setOtp("");
+    try {
+      const response = await sendOTP(mobile);
+      setDemoOtp(response.otp);
+      setError("");
+      alert("OTP resent successfully!");
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const handleServiceLogin = async (e) => {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+
+    try {
+      // Validate service ID format (7-digit pin)
+      if (!/^(100|200|300|400|500)\d{4}$/.test(serviceId)) {
+        throw new Error(
+          "Invalid Service ID. Must be a 7-digit pin (e.g., 1004782)",
+        );
+      }
+
+      const response = await serviceLogin(serviceId, password);
+
+      // Login user with token
+      login(response.user, response.token, response.refresh);
+
+      // Redirect based on role from response
+      const role = response.user.role;
+      switch (role) {
+        case "admin":
+          navigate("/admin-dashboard");
+          break;
+        case "hospital":
+          navigate("/hospital-dashboard");
+          break;
+        case "fire":
+          navigate("/fire-dashboard");
+          break;
+        case "ngo":
+          navigate("/ngo-dashboard");
+          break;
+        case "police":
+          navigate("/police-dashboard");
+          break;
+        default:
+          navigate("/user-dashboard");
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const toggleLoginMode = () => {
+    setLoginMode(loginMode === "user" ? "service" : "user");
+    setError("");
+    setStep("mobile");
+    setOtp("");
+    setOtpSent(false);
+    setServiceId("");
+    setPassword("");
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-dark-950 via-dark-900 to-dark-950 px-4">
+      <div className="w-full max-w-md">
+        {/* Header */}
+        <div className="text-center mb-8">
+          <div className="flex justify-center mb-4">
+            <div className="w-20 h-20 bg-gradient-to-br from-red-500 to-red-700 rounded-full flex items-center justify-center shadow-2xl">
+              <Shield className="w-12 h-12 text-white" />
+            </div>
+          </div>
+          <h1 className="text-4xl font-bold text-white mb-2">SafeNow</h1>
+          <p className="text-gray-400 text-lg">{t.login.yourSafetyPriority}</p>
+        </div>
+
+        {/* Login Card */}
+        <div className="card p-8 shadow-2xl">
+          {loginMode === "user" ? (
+            // USER LOGIN (OTP)
+            step === "mobile" ? (
+              <form onSubmit={handleSendOTP}>
+                <h2 className="text-2xl font-bold text-white mb-2">
+                  {t.login.title}
+                </h2>
+                <p className="text-gray-400 mb-6">
+                  {t.login.subtitle}
+                </p>
+
+                {error && (
+                  <div className="mb-4 p-4 bg-red-500/10 border border-red-500 rounded-lg flex items-start gap-3">
+                    <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+                    <p className="text-red-400 text-sm">{error}</p>
+                  </div>
+                )}
+
+                <div className="mb-6">
+                  <label className="block text-gray-300 text-sm font-semibold mb-2">
+                    {t.login.mobilePlaceholder}
+                  </label>
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                      <PhoneCall className="w-5 h-5 text-gray-500" />
+                    </div>
+                    <input
+                      type="tel"
+                      value={mobile}
+                      onChange={(e) =>
+                        setMobile(
+                          e.target.value.replace(/\D/g, "").slice(0, 10),
+                        )
+                      }
+                      className="input-field pl-12"
+                      maxLength="10"
+                      required
+                    />
+                  </div>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={loading || mobile.length !== 10}
+                  className="w-full btn-primary py-3 text-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  {loading ? (
+                    <>
+                      <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      {t.login.sendingOtp}
+                    </>
+                  ) : (
+                    t.login.sendOtp
+                  )}
+                </button>
+              </form>
+            ) : (
+              <form onSubmit={handleVerifyOTP}>
+                <h2 className="text-2xl font-bold text-white mb-2">
+                  {t.login.verifyOtp}
+                </h2>
+                <p className="text-gray-400 mb-6">
+                  {t.login.otpSentTo}{" "}
+                  <span className="text-white font-semibold">{mobile}</span>
+                </p>
+
+                {error && (
+                  <div className="mb-4 p-4 bg-red-500/10 border border-red-500 rounded-lg flex items-start gap-3">
+                    <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+                    <p className="text-red-400 text-sm">{error}</p>
+                  </div>
+                )}
+
+                {/* Demo OTP Display */}
+                {demoOtp && (
+                  <div className="mb-4 p-4 bg-blue-500/10 border border-blue-500 rounded-lg">
+                    <p className="text-blue-400 text-sm font-mono">
+                      <span className="font-semibold">{t.login.demoOtp}:</span> {demoOtp}
+                    </p>
+                  </div>
+                )}
+
+                <div className="mb-6">
+                  <label className="block text-gray-300 text-sm font-semibold mb-2">
+                    {t.login.enterOtp}
+                  </label>
+                  <input
+                    type="text"
+                    value={otp}
+                    onChange={(e) =>
+                      setOtp(e.target.value.replace(/\D/g, "").slice(0, 6))
+                    }
+                    placeholder="XXXXXX"
+                    className="input-field text-center text-2xl tracking-widest"
+                    maxLength="6"
+                    required
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={loading || otp.length !== 6}
+                  className="w-full btn-primary py-3 text-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 mb-4"
+                >
+                  {loading ? (
+                    <>
+                      <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      {t.login.verifying}
+                    </>
+                  ) : (
+                    t.login.verifyLogin
+                  )}
+                </button>
+
+                <div className="flex items-center justify-between text-sm">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setStep("mobile");
+                      setOtp("");
+                      setError("");
+                    }}
+                    className="text-gray-400 hover:text-white transition-colors"
+                  >
+                    {t.login.changeNumber}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleResendOTP}
+                    className="text-primary-500 hover:text-primary-400 transition-colors font-semibold"
+                  >
+                    {t.login.resendOtp}
+                  </button>
+                </div>
+              </form>
+            )
+          ) : (
+            // SERVICE PROVIDER LOGIN
+            <form onSubmit={handleServiceLogin}>
+              <h2 className="text-2xl font-bold text-white mb-2">
+                {t.login.serviceProviderLogin}
+              </h2>
+              <p className="text-gray-400 mb-6">
+                {t.login.loginWithCredentials}
+              </p>
+
+              {error && (
+                <div className="mb-4 p-4 bg-red-500/10 border border-red-500 rounded-lg flex items-start gap-3">
+                  <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+                  <p className="text-red-400 text-sm">{error}</p>
+                </div>
+              )}
+
+              <div className="mb-4">
+                <label className="block text-gray-300 text-sm font-semibold mb-2">
+                  {t.login.serviceId}
+                </label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                    <Building2 className="w-5 h-5 text-gray-500" />
+                  </div>
+                  <input
+                    type="text"
+                    value={serviceId}
+                    onChange={(e) =>
+                      setServiceId(
+                        e.target.value.replace(/\D/g, "").slice(0, 7),
+                      )
+                    }
+                    placeholder="1004782"
+                    className="input-field pl-12"
+                    maxLength="7"
+                    required
+                  />
+                </div>
+                <p className="text-xs text-gray-500 mt-2">
+                  {t.login.serviceIdHint}
+                </p>
+              </div>
+
+              <div className="mb-6">
+                <label className="block text-gray-300 text-sm font-semibold mb-2">
+                  {t.login.password}
+                </label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                    <Lock className="w-5 h-5 text-gray-500" />
+                  </div>
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder={t.login.enterPassword}
+                    className="input-field pl-12"
+                    required
+                  />
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={loading || !serviceId || !password}
+                className="w-full btn-primary py-3 text-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              >
+                {loading ? (
+                  <>
+                    <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    {t.login.loggingInText}
+                  </>
+                ) : (
+                  t.login.login
+                )}
+              </button>
+            </form>
+          )}
+
+          {/* Toggle between User and Service Login */}
+          <div className="mt-6 text-center border-t border-gray-700 pt-6">
+            <button
+              type="button"
+              onClick={toggleLoginMode}
+              className="text-primary-500 hover:text-primary-400 transition-colors font-semibold text-sm"
+            >
+              {loginMode === "user"
+                ? t.login.loginAsServiceProvider
+                : t.login.backToUserLogin}
+            </button>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="text-center mt-8 mb-12">
+          <p className="text-gray-500 text-sm">
+            {t.login.termsAndPrivacy}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default Login;
