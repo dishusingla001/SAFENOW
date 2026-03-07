@@ -238,6 +238,27 @@ def update_request_status(request, request_id):
         sos.response_time = sos.calculate_response_time()
     elif new_status == 'completed':
         sos.completed_at = timezone.now()
+        
+        # Award points to helper (service provider) for completing the request
+        try:
+            from authentication.points_utils import calculate_points_for_request, award_points
+            
+            # Calculate points earned
+            points_earned = calculate_points_for_request(sos)
+            
+            # Award points to the service provider who completed the request
+            award_points(
+                user=request.user,
+                amount=points_earned,
+                description=f"Completed SOS request - {sos.type}",
+                sos_request=sos,
+                transaction_type='earned'
+            )
+            
+            logger.info(f"Awarded {points_earned} points to {request.user.mobile} for completing SOS {sos.id}")
+        except Exception as e:
+            logger.error(f"Error awarding points for SOS {sos.id}: {str(e)}")
+            # Don't fail the request completion if points award fails
 
     sos.save()
 
@@ -393,7 +414,7 @@ def calculate_distance(lat1, lon1, lat2, lon2):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def helper_requests_view(request):
-    """Get all pending SOS requests within helper's service radius."""
+    """Get pending SOS requests within helper's service radius and accepted requests by this helper."""
     user = request.user
     
     # Check if user is a helper
@@ -417,7 +438,13 @@ def helper_requests_view(request):
         status='pending'
     ).select_related('user').order_by('-created_at')
     
-    # Filter by radius if location is provided
+    # Get requests accepted by this helper (not yet completed)
+    accepted_requests = SOSRequest.objects.filter(
+        status='accepted',
+        responded_by=user
+    ).select_related('user').order_by('-accepted_at')
+    
+    # Filter pending by radius if location is provided
     if helper_lat and helper_lon:
         filtered_requests = []
         for req in pending_requests:
@@ -433,19 +460,39 @@ def helper_requests_view(request):
         for req in pending_requests:
             req.distance = None
     
-    serializer = SOSRequestSerializer(pending_requests, many=True)
-    requests_data = serializer.data
+    # Add distance to accepted requests too if location provided
+    if helper_lat and helper_lon:
+        for req in accepted_requests:
+            distance = calculate_distance(
+                helper_lat, helper_lon,
+                req.latitude, req.longitude
+            )
+            req.distance = round(distance, 2)
+    else:
+        for req in accepted_requests:
+            req.distance = None
+    
+    pending_serializer = SOSRequestSerializer(pending_requests, many=True)
+    accepted_serializer = SOSRequestSerializer(accepted_requests, many=True)
+    
+    pending_data = pending_serializer.data
+    accepted_data = accepted_serializer.data
     
     # Add distance to each request if calculated
     if helper_lat and helper_lon:
         for i, req in enumerate(pending_requests):
             if hasattr(req, 'distance') and req.distance is not None:
-                requests_data[i]['distance'] = req.distance
+                pending_data[i]['distance'] = req.distance
+        for i, req in enumerate(accepted_requests):
+            if hasattr(req, 'distance') and req.distance is not None:
+                accepted_data[i]['distance'] = req.distance
     
     return Response({
         'success': True,
-        'requests': requests_data,
-        'count': len(requests_data),
+        'pending_requests': pending_data,
+        'accepted_requests': accepted_data,
+        'requests': pending_data,  # For backward compatibility
+        'count': len(pending_data) + len(accepted_data),
         'helper_radius_km': user.helper_radius_km
     })
 
@@ -479,19 +526,20 @@ def helper_respond_request_view(request, request_id):
             'message': 'SOS request not found'
         }, status=status.HTTP_404_NOT_FOUND)
     
-    # Check if request is still pending
-    if sos.status != 'pending':
-        return Response({
-            'success': False,
-            'message': f'Request is already {sos.status}'
-        }, status=status.HTTP_400_BAD_REQUEST)
-    
     action = request.data.get('action', '').lower()
     
     if action == 'accept':
+        # Check if request is still pending (only for accept action)
+        if sos.status != 'pending':
+            return Response({
+                'success': False,
+                'message': f'Request is already {sos.status}'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
         sos.status = 'accepted'
         sos.responded_by = user
         sos.accepted_at = timezone.now()
+        sos.response_time = sos.calculate_response_time()
         sos.notes = f"Accepted by helper: {user.name}"
         sos.save()
         
@@ -516,6 +564,76 @@ def helper_respond_request_view(request, request_id):
         return Response({
             'success': False,
             'message': 'Invalid action. Use "accept" or "reject"'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def user_confirm_completion_view(request, request_id):
+    """The requesting user confirms that help was received, completing the request and awarding points to the helper."""
+    user = request.user
+    
+    try:
+        sos = SOSRequest.objects.get(id=request_id)
+    except SOSRequest.DoesNotExist:
+        return Response({
+            'success': False,
+            'message': 'SOS request not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    
+    # Only the user who sent the SOS can confirm completion
+    if sos.user != user:
+        return Response({
+            'success': False,
+            'message': 'Only the person who sent this request can confirm completion'
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    # Request must be in accepted status
+    if sos.status != 'accepted':
+        return Response({
+            'success': False,
+            'message': f'Request cannot be confirmed. Current status: {sos.status}'
         }, status=status.HTTP_400_BAD_REQUEST)
+    
+    sos.status = 'completed'
+    sos.completed_at = timezone.now()
+    sos.notes = f"Confirmed complete by user: {user.name}"
+    
+    # Award points to the helper who accepted the request
+    points_earned = 0
+    helper = sos.responded_by
+    if helper:
+        try:
+            from authentication.points_utils import calculate_points_for_request, award_points
+            
+            points_earned = calculate_points_for_request(sos)
+            
+            award_points(
+                user=helper,
+                amount=points_earned,
+                description=f"Completed SOS request - {sos.type}",
+                sos_request=sos,
+                transaction_type='earned'
+            )
+            
+            logger.info(f"Awarded {points_earned} points to helper {helper.mobile} for SOS {sos.id} (confirmed by user)")
+        except Exception as e:
+            logger.error(f"Error awarding points for SOS {sos.id}: {str(e)}")
+    
+    sos.save()
+    
+    # Notify helper via WebSocket
+    sos_data = serialize_for_ws(SOSRequestSerializer(sos).data)
+    if helper:
+        notify_ws(f'user_{helper.mobile}', 'sos_status_update', sos_data)
+    for group in get_target_groups(sos.type):
+        notify_ws(group, 'sos_status_update', sos_data)
+    
+    return Response({
+        'success': True,
+        'message': 'Help confirmed! Thank you for your feedback.',
+        'points_awarded_to_helper': float(points_earned),
+        'request': SOSRequestSerializer(sos).data
+    })
 
 
