@@ -5,7 +5,10 @@ from .models import User, UserSession, ServiceProvider, EmergencyContact
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ['id', 'mobile', 'name', 'email', 'role', 'created_at']
+        fields = [
+            'id', 'mobile', 'name', 'email', 'role', 'created_at',
+            'is_helper', 'helper_available', 'helper_skills', 'helper_radius_km'
+        ]
         read_only_fields = ['id', 'created_at']
 
 
@@ -70,9 +73,9 @@ class ServiceLoginSerializer(serializers.Serializer):
 
     def validate_service_id(self, value):
         value = value.strip()
-        # Validate format: 7-digit pin code starting with 100/200/300/400/500
+        # Validate format: 7-digit pin code starting with 100/200/300/400
         import re
-        if not re.match(r'^(100|200|300|400|500)\d{4}$', value):
+        if not re.match(r'^(100|200|300|400)\d{4}$', value):
             raise serializers.ValidationError(
                 "Invalid Service ID format. Must be a 7-digit pin (e.g., 1004782)"
             )

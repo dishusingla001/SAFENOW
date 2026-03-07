@@ -408,7 +408,7 @@ const MapView = () => {
       </div>
 
       {/* Map */}
-      <div className="rounded-xl overflow-hidden border border-dark-700 shadow-lg" style={{ height: "500px" }}>
+      <div className="rounded-xl overflow-hidden border border-dark-700 shadow-lg" style={{ height: "400px", maxHeight: "400px" }}>
         <MapContainer center={defaultCenter} zoom={14} scrollWheelZoom={true} style={{ height: "100%", width: "100%" }}>
           <TileLayer
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'

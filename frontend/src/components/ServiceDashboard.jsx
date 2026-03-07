@@ -340,7 +340,7 @@ const ServiceDashboard = () => {
                       }`}
                     >
                       <div className="flex items-start justify-between mb-3">
-                        <div>
+                        <div className="flex-1">
                           <p className="font-semibold text-white">
                             {request.userName}
                           </p>
@@ -348,6 +348,12 @@ const ServiceDashboard = () => {
                             <Phone className="w-3 h-3" />
                             {request.userId}
                           </p>
+                          {request.respondedByName && (
+                            <p className="text-xs text-green-400 flex items-center gap-1 mt-1">
+                              <User className="w-3 h-3" />
+                              Responded by {request.respondedByName}
+                            </p>
+                          )}
                         </div>
                         <span
                           className={`px-2 py-1 bg-${serviceInfo.color}-500/20 text-${serviceInfo.color}-400 text-xs font-semibold rounded`}
@@ -433,7 +439,7 @@ const ServiceDashboard = () => {
                       }`}
                     >
                       <div className="flex items-start justify-between mb-3">
-                        <div>
+                        <div className="flex-1">
                           <p className="font-semibold text-white">
                             {request.userName}
                           </p>
@@ -441,6 +447,12 @@ const ServiceDashboard = () => {
                             <Phone className="w-3 h-3" />
                             {request.userId}
                           </p>
+                          {request.respondedByName && (
+                            <p className="text-xs text-green-400 flex items-center gap-1 mt-1">
+                              <User className="w-3 h-3" />
+                              Responded by {request.respondedByName}
+                            </p>
+                          )}
                         </div>
                         <div className="flex items-center gap-2">
                           <button
@@ -493,17 +505,19 @@ const ServiceDashboard = () => {
           {/* Map View */}
           <div className="space-y-6 lg:sticky lg:top-24">
             <div
-              className="card p-6"
-              style={{ height: "350px" }}
+              className="card p-6 overflow-hidden"
+              style={{ height: "500px" }}
             >
               <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
                 <MapPin className="w-5 h-5 text-primary-500" />
                 Live Location Map
               </h3>
-              <MapView
-                requests={pendingRequests}
-                selectedRequest={selectedRequest}
-              />
+              <div className="h-[calc(100%-3rem)] overflow-hidden">
+                <MapView
+                  requests={pendingRequests}
+                  selectedRequest={selectedRequest}
+                />
+              </div>
             </div>
 
             {/* Active Request Locations */}

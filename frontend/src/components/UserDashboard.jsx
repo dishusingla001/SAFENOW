@@ -9,7 +9,6 @@ import {
   MapPin,
   Phone,
   Shield,
-  Ambulance,
   Users,
   AlertTriangle,
   Settings as SettingsIcon,
@@ -35,6 +34,10 @@ import {
   submitSOSRequest,
   getUserRequests,
   updateUserProfile,
+  toggleHelperMode,
+  toggleHelperAvailability,
+  getHelperRequests,
+  helperRespondToRequest,
 } from "../utils/api";
 import Sidebar from "./Sidebar";
 import SafetyChatbot from "./SafetyChatbot";
@@ -42,7 +45,6 @@ import EmergencyContacts from "./EmergencyContacts";
 import MapView from "./MapView";
 
 const requestTypes = [
-  { id: "ambulance", label: "Ambulance", icon: Ambulance, color: "bg-red-600" },
   { id: "police", label: "Police", icon: Shield, color: "bg-blue-600" },
   {
     id: "fire",
@@ -72,7 +74,7 @@ const UserDashboard = () => {
     getLocation,
   } = useGeolocation();
 
-  const [selectedType, setSelectedType] = useState("ambulance");
+  const [selectedType, setSelectedType] = useState("police");
   const [sosActive, setSosActive] = useState(false);
   const [requestHistory, setRequestHistory] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -121,6 +123,18 @@ const UserDashboard = () => {
   // Get active section from URL hash
   const activeSection = locationHook.hash.replace("#", "") || "dashboard";
 
+  // Helper mode states
+  const [isHelper, setIsHelper] = useState(user.is_helper || false);
+  const [helperAvailable, setHelperAvailable] = useState(user.helper_available || true);
+  const [helperRequests, setHelperRequests] = useState([]);
+  const [helperLoading, setHelperLoading] = useState(false);
+  const [selectedHelperRequest, setSelectedHelperRequest] = useState(null);
+  const [helperSkills, setHelperSkills] = useState(user.helper_skills || '');
+  const [helperRadius, setHelperRadius] = useState(user.helper_radius_km || 5);
+  const [showHelperConsent, setShowHelperConsent] = useState(false);
+  const [consentAccepted, setConsentAccepted] = useState(false);
+
+
   useEffect(() => {
     loadRequestHistory();
     // Get location on component mount so it's ready when needed
@@ -144,6 +158,31 @@ const UserDashboard = () => {
       setSendingRequest(false);
     }
   }, [locationError, sendingRequest]);
+
+  // Load helper requests when helper section is active
+  useEffect(() => {
+    if (activeSection === 'helper' && isHelper && helperAvailable) {
+      const loadHelperRequests = async () => {
+        setHelperLoading(true);
+        try {
+          if (location) {
+            const response = await getHelperRequests(
+              location.latitude,
+              location.longitude
+            );
+            setHelperRequests(response.requests || []);
+          } else {
+            const response = await getHelperRequests();
+            setHelperRequests(response.requests || []);
+          }
+        } catch (error) {
+          console.error('Error loading helper requests:', error);
+        }
+        setHelperLoading(false);
+      };
+      loadHelperRequests();
+    }
+  }, [activeSection, isHelper, helperAvailable, location]);
 
   const loadRequestHistory = async () => {
     try {
@@ -503,10 +542,10 @@ const UserDashboard = () => {
 
                     {/* Request Type Selection */}
                     <div>
-                      <h3 className="text-base font-semibold text-white mb-3 text-left">
+                      <h3 className="text-base font-semibold text-white mb-3 text-center">
                         Select Emergency Type
                       </h3>
-                      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 sm:gap-3">
+                      <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 max-w-4xl mx-auto">
                         {requestTypes.map((type) => {
                           const Icon = type.icon;
                           return (
@@ -924,10 +963,10 @@ const UserDashboard = () => {
 
                 {/* Request Type Selection */}
                 <div>
-                  <h3 className="text-lg font-bold text-white mb-6 text-left">
+                  <h3 className="text-lg font-bold text-white mb-6 text-center">
                     Select Emergency Type
                   </h3>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 max-w-5xl mx-auto">
                     {requestTypes.map((type) => {
                       const Icon = type.icon;
                       return (
@@ -1160,7 +1199,9 @@ const UserDashboard = () => {
                       </div>
                     </div>
                   </div>
-                  <MapView />
+                  <div className="overflow-hidden">
+                    <MapView />
+                  </div>
                 </div>
               ) : (
                 <div className="text-center py-20">
@@ -1594,11 +1635,436 @@ const UserDashboard = () => {
               </div>
             </div>
           )}
+
+          {/* Helper Mode Section */}
+          {activeSection === "helper" && (
+            <div className="space-y-6">
+              {/* Helper Status Card */}
+              <div className="card p-8">
+                <div className="flex items-center justify-between mb-6">
+                  <div>
+                    <h2 className="text-2xl font-bold text-white flex items-center gap-3">
+                      <Users className="w-8 h-8 text-primary-500" />
+                      Helper Mode
+                    </h2>
+                    <p className="text-gray-400 mt-2">
+                      Help others in emergency situations
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      if (isHelper) {
+                        // If already a helper, allow removal without consent
+                        (async () => {
+                          try {
+                            await toggleHelperMode(false, helperSkills, helperRadius);
+                            setIsHelper(false);
+                            updateUser({ ...user, is_helper: false });
+                            setSuccessMessage('Withdrawn from helper program');
+                            setTimeout(() => setSuccessMessage(''), 3000);
+                          } catch (error) {
+                            console.error('Toggle helper error:', error);
+                          }
+                        })();
+                      } else {
+                        // Show consent modal first
+                        setShowHelperConsent(true);
+                      }
+                    }}
+                    className={`px-6 py-3 rounded-xl font-semibold transition-all ${
+                      isHelper
+                        ? 'bg-red-500 hover:bg-red-600 text-white'
+                        : 'bg-green-600 hover:bg-green-700 text-white'
+                    }`}
+                  >
+                    {isHelper ? 'Withdraw' : 'Apply as Helper'}
+                  </button>
+                </div>
+
+                {/* Helper Configuration */}
+                {isHelper && (
+                  <div className="space-y-4 mb-6">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-300 mb-2">
+                        Your Skills (optional)
+                      </label>
+                      <input
+                        type="text"
+                        value={helperSkills}
+                        onChange={(e) => setHelperSkills(e.target.value)}
+                        placeholder="e.g., First Aid, CPR, Medical"
+                        className="w-full p-3 bg-dark-800 border border-dark-700 rounded-lg text-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-300 mb-2">
+                        Service Radius: {helperRadius} km
+                      </label>
+                      <input
+                        type="range"
+                        min="1"
+                        max="20"
+                        value={helperRadius}
+                        onChange={(e) => setHelperRadius(parseInt(e.target.value))}
+                        className="w-full"
+                      />
+                    </div>
+                    <button
+                      onClick={async () => {
+                        try {
+                          await toggleHelperMode(true, helperSkills, helperRadius);
+                          setSuccessMessage('Helper settings updated!');
+                          setTimeout(() => setSuccessMessage(''), 3000);
+                        } catch (error) {
+                          console.error('Update helper error:', error);
+                        }
+                      }}
+                      className="px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg"
+                    >
+                      Save Settings
+                    </button>
+
+                    {/* Availability Toggle */}
+                    <div className="p-4 bg-dark-800 rounded-lg flex items-center justify-between">
+                      <div>
+                        <p className="text-white font-medium">Available for Requests</p>
+                        <p className="text-sm text-gray-400">
+                          Toggle your availability to accept requests
+                        </p>
+                      </div>
+                      <button
+                        onClick={async () => {
+                          try {
+                            const newAvailability = !helperAvailable;
+                            await toggleHelperAvailability(newAvailability);
+                            setHelperAvailable(newAvailability);
+                          } catch (error) {
+                            console.error('Toggle availability error:', error);
+                          }
+                        }}
+                        className={`relative w-14 h-7 rounded-full transition-colors ${
+                          helperAvailable ? 'bg-green-600' : 'bg-gray-600'
+                        }`}
+                      >
+                        <span
+                          className={`absolute top-1 left-1 w-5 h-5 bg-white rounded-full transition-transform ${
+                            helperAvailable ? 'translate-x-7' : 'translate-x-0'
+                          }`}
+                        />
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Active Requests */}
+              {isHelper && helperAvailable && (
+                <div className="card p-8">
+                  <div className="flex items-center justify-between mb-6">
+                    <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                      <AlertCircle className="w-6 h-6 text-red-500" />
+                      Nearby Emergency Requests
+                    </h3>
+                    <button
+                      onClick={async () => {
+                        setHelperLoading(true);
+                        try {
+                          if (location) {
+                            const response = await getHelperRequests(
+                              location.latitude,
+                              location.longitude
+                            );
+                            setHelperRequests(response.requests || []);
+                          } else {
+                            const response = await getHelperRequests();
+                            setHelperRequests(response.requests || []);
+                          }
+                        } catch (error) {
+                          console.error('Error loading requests:', error);
+                        }
+                        setHelperLoading(false);
+                      }}
+                      className="px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg flex items-center gap-2"
+                      disabled={helperLoading}
+                    >
+                      {helperLoading ? 'Loading...' : 'Refresh'}
+                    </button>
+                  </div>
+
+                  {helperLoading ? (
+                    <div className="text-center py-8">
+                      <div className="animate-spin w-8 h-8 border-4 border-primary-500 border-t-transparent rounded-full mx-auto"></div>
+                      <p className="text-gray-400 mt-4">Loading requests...</p>
+                    </div>
+                  ) : helperRequests.filter(req => req.userId !== user.mobile).length === 0 ? (
+                    <div className="text-center py-8">
+                      <AlertCircle className="w-12 h-12 text-gray-600 mx-auto mb-4" />
+                      <p className="text-gray-400">No emergency requests nearby</p>
+                      <p className="text-sm text-gray-500 mt-2">
+                        {helperRequests.length > 0 ? "Your own requests are not shown here" : "Check back later or increase your service radius"}
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {helperRequests.filter(req => req.userId !== user.mobile).map((req) => (
+                        <div
+                          key={req.id}
+                          className="p-4 bg-dark-800 rounded-lg border border-dark-700 hover:border-primary-500/50 transition-all"
+                        >
+                          <div className="flex items-start justify-between">
+                            <div className="flex-1">
+                              <div className="flex items-center gap-3 mb-2">
+                                <span className="px-3 py-1 bg-red-500/20 text-red-400 rounded-full text-sm font-semibold">
+                                  {req.type}
+                                </span>
+                                {req.distance && (
+                                  <span className="text-sm text-gray-400">
+                                    <MapPin className="w-4 h-4 inline" /> {req.distance} km away
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-white font-medium mb-1">
+                                User: {req.userName || 'Anonymous'}
+                              </p>
+                              <p className="text-sm text-gray-400 mb-2">
+                                {req.address || 'Location shared'}
+                              </p>
+                              <p className="text-xs text-gray-500">
+                                {new Date(req.timestamp).toLocaleString()}
+                              </p>
+                            </div>
+                            <div className="flex flex-col gap-2">
+                              <button
+                                onClick={async () => {
+                                  try {
+                                    await helperRespondToRequest(req.id, 'accept');
+                                    setSuccessMessage('Request accepted! User has been notified.');
+                                    setTimeout(() => setSuccessMessage(''), 3000);
+                                    // Refresh requests
+                                    const response = await getHelperRequests(
+                                      location?.latitude,
+                                      location?.longitude
+                                    );
+                                    setHelperRequests(response.requests || []);
+                                  } catch (error) {
+                                    console.error('Accept error:', error);
+                                  }
+                                }}
+                                className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-semibold"
+                              >
+                                Accept
+                              </button>
+                              <a
+                                href={`https://www.google.com/maps/dir/?api=1&destination=${req.location.latitude},${req.location.longitude}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold text-center"
+                              >
+                                Directions
+                              </a>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </main>
 
       {/* AI Safety Chatbot */}
       <SafetyChatbot onSOSRequest={handleChatbotSOS} userLocation={location} />
+
+      {/* Helper Consent Modal */}
+      {showHelperConsent && (
+        <div className="fixed inset-0 bg-black/90 backdrop-blur-md flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl max-w-3xl w-full max-h-[90vh] flex flex-col overflow-hidden shadow-2xl">
+            {/* Header */}
+            <div className="bg-gradient-to-r from-red-600 to-red-700 p-6 text-center flex-shrink-0">
+              <div className="inline-flex items-center justify-center w-16 h-16 bg-white/20 rounded-full mb-4">
+                <Shield className="w-10 h-10 text-white" />
+              </div>
+              <h2 className="text-3xl font-bold text-white mb-2">
+                VOLUNTEER HELPER CONSENT FORM
+              </h2>
+              <p className="text-red-100 text-sm">
+                SafeNow Emergency Response Platform
+              </p>
+            </div>
+            
+            {/* Scrollable Content */}
+            <div className="overflow-y-auto flex-1 bg-gray-50">
+              <div className="p-6 space-y-4">
+                {/* Introduction */}
+                <div className="bg-white rounded-lg p-4 border-2 border-gray-200">
+                  <p className="text-gray-700 text-sm leading-relaxed">
+                    <strong className="text-gray-900">IMPORTANT:</strong> Please read this Volunteer Helper Consent Agreement carefully before proceeding. 
+                    By clicking "I Accept and Consent" below, you acknowledge that you have read, understood, and agree to be bound by all terms and conditions outlined in this document.
+                  </p>
+                </div>
+
+                {/* Section 1 */}
+                <div className="bg-white rounded-lg p-4 border border-gray-300">
+                  <div className="flex items-start gap-3 mb-4">
+                    <div className="flex-shrink-0 w-8 h-8 bg-red-600 text-white rounded-full flex items-center justify-center font-bold text-sm">
+                      1
+                    </div>
+                    <div className="flex-1">
+                      <h3 className="text-lg font-bold text-gray-900 mb-3">
+                        VOLUNTEER STATUS AND RESPONSIBILITIES
+                      </h3>
+                      <div className="space-y-2 text-sm text-gray-700">
+                        <p><strong>1.1.</strong> I understand that I am registering as a <strong>volunteer helper</strong> and not as a certified emergency responder, employee, or agent of SafeNow.</p>
+                        <p><strong>1.2.</strong> I agree to respond to emergency requests <strong>only when I am genuinely available and capable</strong> of providing safe assistance.</p>
+                        <p><strong>1.3.</strong> I will <strong>provide assistance in a safe, responsible, and lawful manner</strong>, respecting the privacy and dignity of those I help.</p>
+                        <p><strong>1.4.</strong> I will <strong>follow all applicable local laws and regulations</strong> while providing assistance.</p>
+                        <p><strong>1.5.</strong> I acknowledge that I must <strong>never put myself or others in danger</strong> while attempting to help.</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Section 2 */}
+                <div className="bg-white rounded-lg p-4 border border-gray-300">
+                  <div className="flex items-start gap-3 mb-4">
+                    <div className="flex-shrink-0 w-8 h-8 bg-red-600 text-white rounded-full flex items-center justify-center font-bold text-sm">
+                      2
+                    </div>
+                    <div className="flex-1">
+                      <h3 className="text-lg font-bold text-gray-900 mb-3">
+                        LIABILITY WAIVER AND DISCLAIMER
+                      </h3>
+                      <div className="space-y-2 text-sm text-gray-700">
+                        <p><strong>2.1.</strong> I understand that SafeNow is a <strong>platform to connect volunteers with those in need</strong> and does not verify helper qualifications, credentials, or training.</p>
+                        <p><strong>2.2.</strong> I acknowledge that <strong>SafeNow, its owners, operators, and affiliates are not liable</strong> for any incidents, injuries, damages, losses, or claims that may occur during or as a result of my volunteer activities.</p>
+                        <p><strong>2.3.</strong> I agree to <strong>indemnify and hold harmless SafeNow</strong> from any claims, damages, or liabilities arising from my actions as a volunteer helper.</p>
+                        <p><strong>2.4.</strong> I understand that I am <strong>solely responsible for my own safety, actions, and decisions</strong> while providing assistance.</p>
+                        <p><strong>2.5.</strong> I acknowledge that <strong>professional emergency services (police, fire, ambulance) should always be contacted</strong> for serious emergencies.</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Section 3 */}
+                <div className="bg-white rounded-lg p-4 border border-gray-300">
+                  <div className="flex items-start gap-3 mb-4">
+                    <div className="flex-shrink-0 w-8 h-8 bg-red-600 text-white rounded-full flex items-center justify-center font-bold text-sm">
+                      3
+                    </div>
+                    <div className="flex-1">
+                      <h3 className="text-lg font-bold text-gray-900 mb-3">
+                        PRIVACY AND DATA SHARING
+                      </h3>
+                      <div className="space-y-2 text-sm text-gray-700">
+                        <p><strong>3.1.</strong> I consent to having my <strong>name and approximate location shared</strong> with users I choose to help.</p>
+                        <p><strong>3.2.</strong> I understand that my <strong>contact information may be visible</strong> to users whose emergency requests I accept.</p>
+                        <p><strong>3.3.</strong> I acknowledge that my <strong>helper activity, responses, and interactions will be recorded</strong> by SafeNow for safety, quality, and legal purposes.</p>
+                        <p><strong>3.4.</strong> I understand that I can <strong>disable helper mode at any time</strong> to stop receiving emergency requests.</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Section 4 */}
+                <div className="bg-white rounded-lg p-4 border border-gray-300">
+                  <div className="flex items-start gap-3 mb-4">
+                    <div className="flex-shrink-0 w-8 h-8 bg-red-600 text-white rounded-full flex items-center justify-center font-bold text-sm">
+                      4
+                    </div>
+                    <div className="flex-1">
+                      <h3 className="text-lg font-bold text-gray-900 mb-3">
+                        ASSUMPTION OF RISK
+                      </h3>
+                      <div className="space-y-2 text-sm text-gray-700">
+                        <p><strong>4.1.</strong> I understand that <strong>volunteering as a helper involves inherent risks</strong>, including but not limited to physical injury, emotional distress, property damage, or exposure to dangerous situations.</p>
+                        <p><strong>4.2.</strong> I <strong>voluntarily assume all risks</strong> associated with my activities as a helper on the SafeNow platform.</p>
+                        <p><strong>4.3.</strong> I confirm that I am <strong>physically and mentally capable</strong> of providing the type of assistance I intend to offer.</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Final Acknowledgment Box */}
+                <div className="bg-red-50 border-2 border-red-300 rounded-lg p-4">
+                  <div className="flex items-start gap-3">
+                    <AlertCircle className="w-6 h-6 text-red-600 flex-shrink-0 mt-1" />
+                    <div>
+                      <h4 className="font-bold text-red-900 mb-2">FINAL ACKNOWLEDGMENT</h4>
+                      <p className="text-sm text-red-800 leading-relaxed">
+                        By accepting this consent form, I certify that I have carefully read and fully understand all terms and conditions outlined above. 
+                        I voluntarily agree to participate as a helper, acknowledge all risks involved, and release SafeNow from any and all liability. 
+                        I confirm that I am at least 18 years of age and legally competent to enter into this agreement.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Footer with Checkbox and Buttons */}
+            <div className="bg-white border-t-2 border-gray-200 p-4 flex-shrink-0">
+              {/* Checkbox */}
+              <div className="mb-3">
+                <label className="flex items-start gap-3 cursor-pointer group">
+                  <div className="relative flex-shrink-0 mt-1">
+                    <input
+                      type="checkbox"
+                      checked={consentAccepted}
+                      onChange={(e) => setConsentAccepted(e.target.checked)}
+                      className="w-5 h-5 text-red-600 border-2 border-gray-400 rounded focus:ring-2 focus:ring-red-500 cursor-pointer"
+                    />
+                  </div>
+                  <span className="text-sm text-gray-700 group-hover:text-gray-900">
+                    <strong className="text-gray-900">I have read and understood the entire Volunteer Helper Consent Agreement.</strong> I voluntarily agree to all terms and conditions and consent to becoming a volunteer helper on the SafeNow platform.
+                  </span>
+                </label>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex gap-3">
+                <button
+                  onClick={() => {
+                    setShowHelperConsent(false);
+                    setConsentAccepted(false);
+                  }}
+                  className="flex-1 px-4 py-2.5 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded-lg font-semibold transition-all"
+                >
+                  Decline
+                </button>
+                <button
+                  onClick={async () => {
+                    if (!consentAccepted) return;
+                    try {
+                      await toggleHelperMode(true, helperSkills, helperRadius);
+                      setIsHelper(true);
+                      updateUser({ ...user, is_helper: true });
+                      setSuccessMessage('Successfully applied as a helper!');
+                      setTimeout(() => setSuccessMessage(''), 3000);
+                      setShowHelperConsent(false);
+                      setConsentAccepted(false);
+                    } catch (error) {
+                      console.error('Toggle helper error:', error);
+                      setShowHelperConsent(false);
+                      setConsentAccepted(false);
+                    }
+                  }}
+                  disabled={!consentAccepted}
+                  className={`flex-1 px-4 py-2.5 rounded-lg font-semibold transition-all ${
+                    consentAccepted
+                      ? 'bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 text-white shadow-lg cursor-pointer'
+                      : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                  }`}
+                >
+                  I Accept and Consent
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

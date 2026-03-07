@@ -233,6 +233,63 @@ export const logoutUser = async () => {
   }
 };
 
+/**
+ * Toggle helper mode
+ * @param {boolean} isHelper - Enable/disable helper mode
+ * @param {string} helperSkills - Helper skills
+ * @param {number} helperRadiusKm - Service radius in km
+ * @returns {Promise}
+ */
+export const toggleHelperMode = async (isHelper, helperSkills = '', helperRadiusKm = 5) => {
+  return apiRequest("/auth/helper/toggle/", {
+    method: "POST",
+    body: JSON.stringify({ 
+      is_helper: isHelper, 
+      helper_skills: helperSkills,
+      helper_radius_km: helperRadiusKm
+    }),
+  });
+};
+
+/**
+ * Toggle helper availability
+ * @param {boolean} available - Helper availability status
+ * @returns {Promise}
+ */
+export const toggleHelperAvailability = async (available) => {
+  return apiRequest("/auth/helper/availability/", {
+    method: "POST",
+    body: JSON.stringify({ available }),
+  });
+};
+
+/**
+ * Get all SOS requests for helpers
+ * @param {number} latitude - Helper's current latitude
+ * @param {number} longitude - Helper's current longitude
+ * @returns {Promise} - List of nearby SOS requests
+ */
+export const getHelperRequests = async (latitude = null, longitude = null) => {
+  let url = "/sos/helper/requests/";
+  if (latitude && longitude) {
+    url += `?latitude=${latitude}&longitude=${longitude}`;
+  }
+  return apiRequest(url, { method: "GET" });
+};
+
+/**
+ * Respond to an SOS request as a helper
+ * @param {string} requestId - SOS request ID
+ * @param {string} action - 'accept' or 'reject'
+ * @returns {Promise}
+ */
+export const helperRespondToRequest = async (requestId, action) => {
+  return apiRequest(`/sos/helper/request/${requestId}/respond/`, {
+    method: "POST",
+    body: JSON.stringify({ action }),
+  });
+};
+
 export default {
   sendOTP,
   verifyOTP,
@@ -244,4 +301,8 @@ export default {
   updateRequestStatus,
   getAnalytics,
   logoutUser,
+  toggleHelperMode,
+  toggleHelperAvailability,
+  getHelperRequests,
+  helperRespondToRequest,
 };

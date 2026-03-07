@@ -285,3 +285,54 @@ def emergency_contact_detail_view(request, contact_id):
     # DELETE
     contact.delete()
     return Response({'success': True, 'message': 'Contact deleted.'}, status=status.HTTP_200_OK)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def toggle_helper_mode_view(request):
+    """Toggle helper mode for the authenticated user."""
+    user = request.user
+    
+    # Get data from request
+    is_helper = request.data.get('is_helper', False)
+    helper_skills = request.data.get('helper_skills', '')
+    helper_radius_km = request.data.get('helper_radius_km', 5)
+    
+    # Update user helper fields
+    user.is_helper = is_helper
+    user.helper_available = is_helper  # Set available when enabling helper mode
+    user.helper_skills = helper_skills
+    user.helper_radius_km = helper_radius_km
+    user.save()
+    
+    return Response({
+        'success': True,
+        'message': 'Helper mode updated successfully',
+        'is_helper': user.is_helper,
+        'helper_available': user.helper_available,
+        'helper_skills': user.helper_skills,
+        'helper_radius_km': user.helper_radius_km
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def toggle_helper_availability_view(request):
+    """Toggle helper availability status."""
+    user = request.user
+    
+    if not user.is_helper:
+        return Response({
+            'success': False,
+            'message': 'User is not registered as a helper'
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    user.helper_available = request.data.get('available', not user.helper_available)
+    user.save()
+    
+    return Response({
+        'success': True,
+        'message': 'Helper availability updated',
+        'helper_available': user.helper_available
+    })
+

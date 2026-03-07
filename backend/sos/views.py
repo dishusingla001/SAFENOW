@@ -30,7 +30,6 @@ def is_service_provider(user):
 
 # Map SOS type to the service provider group(s) that should be notified
 SOS_TYPE_TO_GROUPS = {
-    'Ambulance': ['hospital_sos'],
     'Medical Help': ['hospital_sos'],
     'Fire Emergency': ['fire_sos'],
     'NGO Support': ['ngo_sos'],
@@ -39,7 +38,7 @@ SOS_TYPE_TO_GROUPS = {
 
 # Map service role to the SOS types they handle
 ROLE_TO_SOS_TYPES = {
-    'hospital': ['Ambulance', 'Medical Help'],
+    'hospital': ['Medical Help'],
     'fire': ['Fire Emergency'],
     'ngo': ['NGO Support'],
     'admin': None,  # Admin sees all types
@@ -100,15 +99,6 @@ def submit_sos_request(request):
     ws_data = serialize_for_ws(sos_data)
     for group in get_target_groups(sos.type):
         notify_ws(group, 'new_sos_request', ws_data)
-
-    # Send SMS to user's emergency contacts in background
-    def _notify_contacts():
-        try:
-            from authentication.services import send_sos_sms_to_emergency_contacts
-            send_sos_sms_to_emergency_contacts(request.user, sos)
-        except Exception as e:
-            logger.warning(f"Emergency contact SMS failed: {e}")
-    threading.Thread(target=_notify_contacts, daemon=True).start()
 
     return Response({
         'success': True,
@@ -319,4 +309,153 @@ def get_fallback_response(user_message):
 
     else:
         return "I'm here to help with safety questions. For minor injuries, stay calm and apply basic first aid. For serious emergencies, please use the SOS button or call emergency services immediately."
+
+
+def calculate_distance(lat1, lon1, lat2, lon2):
+    """
+    Calculate distance between two points using Haversine formula.
+    Returns distance in kilometers.
+    """
+    from math import radians, sin, cos, sqrt, atan2
+    
+    R = 6371  # Earth's radius in kilometers
+    
+    lat1, lon1, lat2, lon2 = map(radians, [float(lat1), float(lon1), float(lat2), float(lon2)])
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    
+    a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
+    c = 2 * atan2(sqrt(a), sqrt(1 - a))
+    
+    return R * c
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def helper_requests_view(request):
+    """Get all pending SOS requests within helper's service radius."""
+    user = request.user
+    
+    # Check if user is a helper
+    if not user.is_helper:
+        return Response({
+            'success': False,
+            'message': 'User is not registered as a helper'
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    # Get helper's location from query params (they need to share their location)
+    helper_lat = request.query_params.get('latitude')
+    helper_lon = request.query_params.get('longitude')
+    
+    if not helper_lat or not helper_lon:
+        # Return all pending requests if location not provided
+        helper_lat = None
+        helper_lon = None
+    
+    # Get all pending requests
+    pending_requests = SOSRequest.objects.filter(
+        status='pending'
+    ).select_related('user').order_by('-created_at')
+    
+    # Filter by radius if location is provided
+    if helper_lat and helper_lon:
+        filtered_requests = []
+        for req in pending_requests:
+            distance = calculate_distance(
+                helper_lat, helper_lon,
+                req.latitude, req.longitude
+            )
+            if distance <= user.helper_radius_km:
+                req.distance = round(distance, 2)
+                filtered_requests.append(req)
+        pending_requests = filtered_requests
+    else:
+        for req in pending_requests:
+            req.distance = None
+    
+    serializer = SOSRequestSerializer(pending_requests, many=True)
+    requests_data = serializer.data
+    
+    # Add distance to each request if calculated
+    if helper_lat and helper_lon:
+        for i, req in enumerate(pending_requests):
+            if hasattr(req, 'distance') and req.distance is not None:
+                requests_data[i]['distance'] = req.distance
+    
+    return Response({
+        'success': True,
+        'requests': requests_data,
+        'count': len(requests_data),
+        'helper_radius_km': user.helper_radius_km
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def helper_respond_request_view(request, request_id):
+    """Helper accepts or rejects an SOS request."""
+    user = request.user
+    
+    # Check if user is a helper
+    if not user.is_helper:
+        return Response({
+            'success': False,
+            'message': 'User is not registered as a helper'
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    # Check if helper is available
+    if not user.helper_available:
+        return Response({
+            'success': False,
+            'message': 'Helper is currently unavailable'
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    # Get the SOS request
+    try:
+        sos = SOSRequest.objects.get(id=request_id)
+    except SOSRequest.DoesNotExist:
+        return Response({
+            'success': False,
+            'message': 'SOS request not found'
+        }, status=status.HTTP_404_NOT_FOUND)
+    
+    # Check if request is still pending
+    if sos.status != 'pending':
+        return Response({
+            'success': False,
+            'message': f'Request is already {sos.status}'
+        }, status=status.HTTP_400_BAD_REQUEST)
+    
+    action = request.data.get('action', '').lower()
+    
+    if action == 'accept':
+        sos.status = 'accepted'
+        sos.responded_by = user
+        sos.accepted_at = timezone.now()
+        sos.notes = f"Accepted by helper: {user.name}"
+        sos.save()
+        
+        # Notify user via WebSocket
+        sos_data = serialize_for_ws(SOSRequestSerializer(sos).data)
+        notify_ws(f'user_{sos.user.mobile}', 'sos_status_update', sos_data)
+        
+        return Response({
+            'success': True,
+            'message': 'Request accepted successfully',
+            'request': SOSRequestSerializer(sos).data
+        })
+    
+    elif action == 'reject':
+        # Helper can't technically reject, but can skip/ignore
+        return Response({
+            'success': True,
+            'message': 'Request skipped'
+        })
+    
+    else:
+        return Response({
+            'success': False,
+            'message': 'Invalid action. Use "accept" or "reject"'
+        }, status=status.HTTP_400_BAD_REQUEST)
+
 
