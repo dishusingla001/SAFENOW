@@ -3,6 +3,7 @@ import logging
 import threading
 import os
 from django.utils import timezone
+from django.conf import settings
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
@@ -15,7 +16,7 @@ from .serializers import (
     SOSRequestSerializer,
     SOSRequestUpdateSerializer,
 )
-from authentication.models import User
+from authentication.models import User, EmergencyContact
 
 logger = logging.getLogger('sos')
 
@@ -77,6 +78,62 @@ def notify_ws(group, msg_type, data):
     threading.Thread(target=_send, daemon=True).start()
 
 
+def send_emergency_sms(user, sos_request):
+    """Send emergency SMS to all emergency contacts of the user."""
+    # Get all emergency contacts for the user
+    emergency_contacts = EmergencyContact.objects.filter(user=user)
+    
+    if not emergency_contacts.exists():
+        logger.info(f"No emergency contacts found for user {user.name}")
+        return
+    
+    # Check if Twilio is configured
+    if not all([settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN, settings.TWILIO_PHONE_NUMBER]):
+        logger.warning("Twilio credentials not configured. Cannot send emergency SMS.")
+        return
+    
+    # Build the emergency message
+    maps_link = f"https://maps.google.com/?q={sos_request.latitude},{sos_request.longitude}"
+    
+    message_body = (
+        f"EMERGENCY ALERT: {user.name} has triggered a SafeNow SOS!\n"
+        f"Emergency type: {sos_request.type}\n"
+        f"Location: {sos_request.latitude}, {sos_request.longitude}\n"
+        f"Maps: {maps_link}\n"
+        f"Please contact them or call emergency services immediately."
+    )
+    
+    # Send SMS to each emergency contact in a separate thread
+    def _send_sms():
+        try:
+            from twilio.rest import Client
+            client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
+            
+            for contact in emergency_contacts:
+                try:
+                    # Format phone number with country code if needed
+                    phone = contact.phone_number
+                    if not phone.startswith('+'):
+                        phone = f"{settings.PHONE_COUNTRY_CODE}{phone}"
+                    
+                    message = client.messages.create(
+                        body=message_body,
+                        from_=settings.TWILIO_PHONE_NUMBER,
+                        to=phone
+                    )
+                    logger.info(f"Emergency SMS sent to {contact.name} ({phone}). SID: {message.sid}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to send SMS to {contact.name} ({contact.phone_number}): {str(e)}")
+                    
+        except Exception as e:
+            logger.error(f"Twilio client error: {str(e)}")
+    
+    # Send SMS in background thread to avoid blocking the request
+    threading.Thread(target=_send_sms, daemon=True).start()
+    logger.info(f"Emergency SMS dispatch initiated for {emergency_contacts.count()} contacts")
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def submit_sos_request(request):
@@ -99,6 +156,9 @@ def submit_sos_request(request):
     ws_data = serialize_for_ws(sos_data)
     for group in get_target_groups(sos.type):
         notify_ws(group, 'new_sos_request', ws_data)
+    
+    # Send emergency SMS to all emergency contacts
+    send_emergency_sms(request.user, sos)
 
     return Response({
         'success': True,
