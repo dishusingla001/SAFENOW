@@ -101,6 +101,15 @@ def submit_sos_request(request):
     for group in get_target_groups(sos.type):
         notify_ws(group, 'new_sos_request', ws_data)
 
+    # Send SMS to user's emergency contacts in background
+    def _notify_contacts():
+        try:
+            from authentication.services import send_sos_sms_to_emergency_contacts
+            send_sos_sms_to_emergency_contacts(request.user, sos)
+        except Exception as e:
+            logger.warning(f"Emergency contact SMS failed: {e}")
+    threading.Thread(target=_notify_contacts, daemon=True).start()
+
     return Response({
         'success': True,
         'request': sos_data,
