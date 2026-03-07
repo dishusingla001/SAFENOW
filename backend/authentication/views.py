@@ -336,3 +336,31 @@ def toggle_helper_availability_view(request):
         'helper_available': user.helper_available
     })
 
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_service_providers_view(request):
+    """Get all service providers (Admin only)."""
+    # Check if user is admin
+    if request.user.role != 'admin':
+        return Response({
+            'success': False,
+            'message': 'Only admins can view service providers'
+        }, status=status.HTTP_403_FORBIDDEN)
+    
+    # Get optional filter by role
+    role_filter = request.GET.get('role', None)
+    
+    if role_filter:
+        providers = ServiceProvider.objects.filter(role=role_filter, is_active=True)
+    else:
+        providers = ServiceProvider.objects.filter(is_active=True)
+    
+    serializer = ServiceProviderSerializer(providers, many=True)
+    
+    return Response({
+        'success': True,
+        'providers': serializer.data,
+        'count': providers.count()
+    })
+
