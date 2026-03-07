@@ -30,7 +30,7 @@ def analytics_view(request):
     # Filter requests based on user role
     # Admin sees all, service providers see only their relevant types
     ROLE_TO_SOS_TYPES = {
-        'hospital': ['Ambulance', 'Medical Help'],
+        'hospital': ['Medical Help'],
         'fire': ['Fire Emergency'],
         'ngo': ['NGO Support'],
         'police': ['Police'],

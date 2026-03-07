@@ -42,6 +42,13 @@ class User(AbstractBaseUser, PermissionsMixin):
     role = models.CharField(max_length=10, choices=ROLE_CHOICES, default='user')
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
+    
+    # Helper fields
+    is_helper = models.BooleanField(default=False)
+    helper_available = models.BooleanField(default=True)
+    helper_skills = models.CharField(max_length=200, blank=True, default='')
+    helper_radius_km = models.IntegerField(default=5)  # Service radius in kilometers
+    
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

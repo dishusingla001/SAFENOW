@@ -5,7 +5,10 @@ from .models import User, UserSession, ServiceProvider, EmergencyContact
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ['id', 'mobile', 'name', 'email', 'role', 'created_at']
+        fields = [
+            'id', 'mobile', 'name', 'email', 'role', 'created_at',
+            'is_helper', 'helper_available', 'helper_skills', 'helper_radius_km'
+        ]
         read_only_fields = ['id', 'created_at']
 
 

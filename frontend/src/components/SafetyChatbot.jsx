@@ -51,7 +51,7 @@ const SafetyChatbot = ({ onSOSRequest, userLocation }) => {
 
     // Keywords for different emergency types
     const keywords = {
-      ambulance: [
+      medical: [
         "accident",
         "injured",
         "bleeding",
@@ -61,7 +61,6 @@ const SafetyChatbot = ({ onSOSRequest, userLocation }) => {
         "breathing",
         "medical",
         "hospital",
-        "ambulance",
         "hurt",
         "pain",
         "broken",
@@ -75,6 +74,17 @@ const SafetyChatbot = ({ onSOSRequest, userLocation }) => {
         "explosion",
         "gas leak",
         "electrical fire",
+      ],
+      police: [
+        "police",
+        "crime",
+        "theft",
+        "robbery",
+        "attack",
+        "assault",
+        "danger",
+        "threat",
+        "suspicious",
       ],
       ngo: [
         "help",
@@ -216,7 +226,7 @@ const SafetyChatbot = ({ onSOSRequest, userLocation }) => {
         );
 
         setSOSContext({
-          type: emergencyType || "ambulance",
+          type: emergencyType || "police",
           userMessage: userMessage,
           aiResponse: aiResponse,
         });
@@ -228,7 +238,7 @@ const SafetyChatbot = ({ onSOSRequest, userLocation }) => {
             {
               id: Date.now() + 2,
               type: "sos-suggestion",
-              emergencyType: emergencyType || "ambulance",
+              emergencyType: emergencyType || "police",
               timestamp: new Date(),
             },
           ]);
@@ -287,8 +297,9 @@ const SafetyChatbot = ({ onSOSRequest, userLocation }) => {
 
   const getEmergencyTypeLabel = (type) => {
     const labels = {
-      ambulance: "Ambulance",
+      medical: "Medical Help",
       fire: "Fire Emergency",
+      police: "Police",
       ngo: "NGO Support",
     };
     return labels[type] || "Emergency Services";

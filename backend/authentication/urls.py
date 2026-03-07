@@ -11,4 +11,6 @@ urlpatterns = [
     path('sessions/', views.sessions_view, name='sessions'),
     path('emergency-contacts/', views.emergency_contacts_view, name='emergency-contacts'),
     path('emergency-contacts/<int:contact_id>/', views.emergency_contact_detail_view, name='emergency-contact-detail'),
+    path('helper/toggle/', views.toggle_helper_mode_view, name='toggle-helper'),
+    path('helper/availability/', views.toggle_helper_availability_view, name='toggle-helper-availability'),
 ]
