@@ -240,13 +240,17 @@ export const logoutUser = async () => {
  * @param {number} helperRadiusKm - Service radius in km
  * @returns {Promise}
  */
-export const toggleHelperMode = async (isHelper, helperSkills = '', helperRadiusKm = 5) => {
+export const toggleHelperMode = async (
+  isHelper,
+  helperSkills = "",
+  helperRadiusKm = 5,
+) => {
   return apiRequest("/auth/helper/toggle/", {
     method: "POST",
-    body: JSON.stringify({ 
-      is_helper: isHelper, 
+    body: JSON.stringify({
+      is_helper: isHelper,
       helper_skills: helperSkills,
-      helper_radius_km: helperRadiusKm
+      helper_radius_km: helperRadiusKm,
     }),
   });
 };
@@ -288,6 +292,19 @@ export const helperRespondToRequest = async (requestId, action) => {
     method: "POST",
     body: JSON.stringify({ action }),
   });
+};
+
+/**
+ * Get all service providers (Admin only)
+ * @param {string} role - Optional filter by role (hospital, fire, ngo, police)
+ * @returns {Promise} - List of service providers
+ */
+export const getServiceProviders = async (role = null) => {
+  let url = "/auth/service-providers/";
+  if (role) {
+    url += `?role=${role}`;
+  }
+  return apiRequest(url, { method: "GET" });
 };
 
 export default {
